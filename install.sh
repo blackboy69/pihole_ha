@@ -39,7 +39,8 @@ prompt_yes_no() {
     local answer
 
     while true; do
-        read -r -p "$prompt_text [$default_answer]: " answer
+        # Explicitly read from /dev/tty for user interaction
+        read -r -p "$prompt_text [$default_answer]: " answer < /dev/tty
         answer="${answer:-$default_answer}" # Default if user just hits Enter
         answer_lower=$(echo "$answer" | tr '[:upper:]' '[:lower:]') # Case-insensitive comparison
         if [[ "$answer_lower" == "yes" || "$answer_lower" == "y" ]]; then
@@ -75,7 +76,7 @@ echo # Newline for readability
 # 1. MY_ROLE: Determine if this node is the MASTER (primary) or BACKUP.
 # The MASTER node will initially hold the VIP if both nodes are up.
 while true; do
-  read -r -p "Is this Pi the PRIMARY (MASTER) or BACKUP node? (Enter MASTER or BACKUP): " MY_ROLE_INPUT
+  read -r -p "Is this Pi the PRIMARY (MASTER) or BACKUP node? (Enter MASTER or BACKUP): " MY_ROLE_INPUT < /dev/tty
   MY_ROLE=$(echo "$MY_ROLE_INPUT" | tr '[:lower:]' '[:upper:]') # Standardize to uppercase
   if [[ "$MY_ROLE" == "MASTER" || "$MY_ROLE" == "BACKUP" ]]; then
     break
@@ -92,7 +93,7 @@ INTERFACES_LIST=$(ls /sys/class/net | grep -v "lo" | tr '\n' ' ') # Lists interf
 echo "(Common interface names might be: $INTERFACES_LIST)"
 echo "Ensure you choose the interface connected to your main LAN where the VIP will reside."
 while true; do
-  read -r -p "Enter the network interface name for keepalived (e.g., eth0, enp6s18): " MY_INTERFACE
+  read -r -p "Enter the network interface name for keepalived (e.g., eth0, enp6s18): " MY_INTERFACE < /dev/tty
   if [ -z "$MY_INTERFACE" ]; then
     echo "Interface name cannot be empty."
   elif ! ip link show "$MY_INTERFACE" > /dev/null 2>&1; then # Check if interface exists
@@ -111,7 +112,7 @@ if [ "$MY_ROLE" == "MASTER" ]; then
   SUGGESTED_PRIORITY_INFO="e.g., 101 for MASTER"
 fi
 while true; do
-  read -r -p "Enter the priority for this node (numeric, $SUGGESTED_PRIORITY_INFO) [Default: $DEFAULT_PRIORITY]: " MY_PRIORITY_INPUT
+  read -r -p "Enter the priority for this node (numeric, $SUGGESTED_PRIORITY_INFO) [Default: $DEFAULT_PRIORITY]: " MY_PRIORITY_INPUT < /dev/tty
   MY_PRIORITY="${MY_PRIORITY_INPUT:-$DEFAULT_PRIORITY}"
   if [[ "$MY_PRIORITY" =~ ^[0-9]+$ ]]; then
     break
@@ -136,7 +137,7 @@ echo "--- Common Settings (these MUST be identical on both Pi-hole HA nodes) ---
 # 5. VIRTUAL_ROUTER_ID: An identifier for the VRRP group. Must match on both nodes.
 DEFAULT_VRID="51" # Arbitrary default, 0-255
 while true; do
-  read -r -p "Enter the Virtual Router ID (numeric, 0-255, must be same on both nodes) [Default: $DEFAULT_VRID]: " VRID_INPUT
+  read -r -p "Enter the Virtual Router ID (numeric, 0-255, must be same on both nodes) [Default: $DEFAULT_VRID]: " VRID_INPUT < /dev/tty
   VIRTUAL_ROUTER_ID="${VRID_INPUT:-$DEFAULT_VRID}"
   if [[ "$VIRTUAL_ROUTER_ID" =~ ^[0-9]+$ && "$VIRTUAL_ROUTER_ID" -ge 0 && "$VIRTUAL_ROUTER_ID" -le 255 ]]; then
     break
@@ -150,9 +151,9 @@ echo
 echo "The VRRP authentication password MUST be identical on both HA nodes."
 echo "Choose a strong password."
 while true; do
-  read -s -r -p "Enter the authentication password for VRRP: " AUTH_PASS_INPUT # -s hides input
+  read -s -r -p "Enter the authentication password for VRRP: " AUTH_PASS_INPUT < /dev/tty # -s hides input
   echo # Newline after hidden input
-  read -s -r -p "Confirm authentication password: " AUTH_PASS_CONFIRM
+  read -s -r -p "Confirm authentication password: " AUTH_PASS_CONFIRM < /dev/tty
   echo # Newline after hidden input
   if [ -z "$AUTH_PASS_INPUT" ]; then
     echo "Password cannot be empty. Please try again."
@@ -171,7 +172,7 @@ DEFAULT_CIDR="24"             # Corresponds to 255.255.255.0
 echo "The Virtual IP (VIP) is the IP address your clients will use as their DNS server."
 echo "It should be on the same subnet as your Pi-holes but not used by any other device."
 while true; do
-  read -r -p "Enter the shared Virtual IP (VIP) address (e.g., $DEFAULT_VIP_EXAMPLE): " VIP_ADDRESS
+  read -r -p "Enter the shared Virtual IP (VIP) address (e.g., $DEFAULT_VIP_EXAMPLE): " VIP_ADDRESS < /dev/tty
   # Basic IPv4 format validation
   if [[ "$VIP_ADDRESS" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
     break
@@ -180,7 +181,7 @@ while true; do
   fi
 done
 while true; do
-  read -r -p "Enter the CIDR prefix for the VIP's subnet (e.g., 24 for a 255.255.255.0 subnet) [Default: $DEFAULT_CIDR]: " VIP_CIDR_PREFIX_INPUT
+  read -r -p "Enter the CIDR prefix for the VIP's subnet (e.g., 24 for a 255.255.255.0 subnet) [Default: $DEFAULT_CIDR]: " VIP_CIDR_PREFIX_INPUT < /dev/tty
   VIP_CIDR_PREFIX="${VIP_CIDR_PREFIX_INPUT:-$DEFAULT_CIDR}"
   if [[ "$VIP_CIDR_PREFIX" =~ ^[0-9]+$ && "$VIP_CIDR_PREFIX" -ge 1 && "$VIP_CIDR_PREFIX" -le 32 ]]; then
     break
@@ -388,6 +389,7 @@ echo " 2. Configure your DHCP server (on your router, e.g., UniFi CGM) to use th
 echo "    Virtual IP address ($VIP_ADDRESS) as the ONLY DNS server for your clients."
 echo " 3. Implement a method to synchronize Pi-hole configurations (adlists,"
 echo "    blocklists, whitelists, etc.) between the two Pis. This script does NOT"
-echo "    handle Pi-hole settings synchronization. Consider using a tool like"
-echo "    'Gravity Sync' (search for it on GitHub) or manual export/import."
+echo "    handle Pi-hole settings synchronization. You might consider using Pi-hole's"
+echo "    Teleporter feature for manual backup/restore, 'rsync' for specific files,"
+echo "    or search for community-maintained synchronization solutions."
 echo "============================================================"
