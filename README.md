@@ -36,7 +36,7 @@ This method downloads and executes the latest version of the script.
 1.  **Open a terminal on your first Pi-hole node.**
 2.  Run the following command:
     ```bash
-    curl -sSL [https://raw.githubusercontent.com/blackboy69/pihole_ha/main/install.sh](https://raw.githubusercontent.com/blackboy69/pihole_ha/main/install.sh) | sudo bash
+    curl -sSL https://raw.githubusercontent.com/blackboy69/pihole_ha/main/install.sh | sudo bash
     ```
     *(Replace the URL if you are using a different repository or branch.)*
 3.  **Answer the interactive prompts** based on the role and settings for this specific node.
