@@ -95,8 +95,7 @@ The script will ask you for the following information for each node:
 2.  **Synchronize Pi-hole Configurations (Crucial!):**
     * This script **only** handles IP address failover. It **does not** synchronize your Pi-hole settings (adlists, blocklists, whitelists, regex filters, client configurations, etc.).
     * You **must** implement a separate mechanism to keep these settings consistent between your two Pi-hole nodes.
-    * A popular tool for this is **[Gravity Sync](https://github.com/vmstan/gravity-sync)**.
-    * Alternatively, you can use scheduled `pihole -a -t` (teleporter) backups and restores, or rsync specific configuration files.
+    * Use scheduled `pihole -a -t` (teleporter) backups and restores, or rsync specific configuration files.
 
 3.  **Test Failover:**
     * Identify which Pi-hole is currently the `MASTER` (it will have the VIP assigned to its network interface: `ip addr show <interface_name>`).
