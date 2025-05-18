@@ -47,15 +47,19 @@ This method downloads and executes the latest version of the script.
 ### Option 2: Download and Run Locally
 
 1.  **Download the script** (e.g., `install.sh`) to each Pi-hole node. You can clone the repository or download the raw file.
-2.  **Make the script executable:**
+    Using `curl`:
+    ```bash
+    curl -sSL -o install.sh https://raw.githubusercontent.com/blackboy69/pihole_ha/main/install.sh
+    ```
+3.  **Make the script executable:**
     ```bash
     chmod +x install.sh
     ```
-3.  **Run the script as root:**
+4.  **Run the script as root:**
     ```bash
     sudo ./install.sh
     ```
-4.  **Answer the interactive prompts** for each node.
+5.  **Answer the interactive prompts** for each node.
 
 ## Configuration Prompts
 
@@ -137,6 +141,3 @@ The script will ask you for the following information for each node:
 * Always back up your systems before making significant changes.
 * Ensure you understand the commands being executed, especially when running scripts downloaded from the internet.
 
----
-
-*Generated on: May 18, 2025*
