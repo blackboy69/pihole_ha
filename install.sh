@@ -227,12 +227,26 @@ fi
 # --- Start Actual System Setup ---
 # The following sections install packages and write configuration files.
 
-# X. Install and Configure Chrony (Conditional Phase)
+CURRENT_SCRIPT_PHASE=1 # Initialize the phase counter, first phase will be 2.
+
+# --- Phase: Keepalived Install ---
+CURRENT_SCRIPT_PHASE=$((CURRENT_SCRIPT_PHASE + 1))
+echo
+echo ">>> Phase $CURRENT_SCRIPT_PHASE: Updating package lists and installing keepalived..."
+apt update > /dev/null 2>&1 # Suppress apt update output for cleaner logs
+if apt install -y keepalived; then
+  echo "SUCCESS: Keepalived package installed."
+else
+  echo "ERROR: Failed to install keepalived. Please check for errors above. Exiting."
+  exit 1
+fi
+
+# --- Phase: Chrony Install (Conditional) ---
 # This phase only runs if the user opted to install Chrony.
-CHRONY_PHASE_NUM=1 # This will be the first phase if executed.
 if [ "$INSTALL_CHRONY" == "yes" ]; then
+  CURRENT_SCRIPT_PHASE=$((CURRENT_SCRIPT_PHASE + 1))
   echo
-  echo ">>> Phase $CHRONY_PHASE_NUM: Installing and configuring Chrony..."
+  echo ">>> Phase $CURRENT_SCRIPT_PHASE: Installing and configuring Chrony..."
   apt update > /dev/null 2>&1
   if apt install -y chrony; then
     echo "SUCCESS: Chrony package installed."
@@ -268,38 +282,18 @@ EOF_CHRONY_CONF
     echo "ERROR: Failed to install Chrony. Please check for errors above. Chrony setup skipped."
     # No exit here, as keepalived setup might still be desired.
   fi
-  # CHRONY_PHASE_NUM is not strictly needed beyond this point for this script's logic,
-  # as subsequent phase numbers are dynamically determined.
 else
   echo
-  echo "Skipping Chrony installation as per user choice."
+  echo "Skipping Chrony installation as per user choice." # This message is not numbered as a phase
 fi
 
-# Adjust subsequent phase numbers for user messages based on whether Chrony was installed.
-# If Chrony was installed, keepalived-related phases start from 2. Otherwise, they start from 1.
-KEEPALIVED_INSTALL_PHASE_NUM=$([ "$INSTALL_CHRONY" == "yes" ] && echo "2" || echo "1")
-HEALTHCHECK_SCRIPT_PHASE_NUM=$([ "$INSTALL_CHRONY" == "yes" ] && echo "3" || echo "2") # Pi-hole health check script
-KEEPALIVED_CONFIG_PHASE_NUM=$([ "$INSTALL_CHRONY" == "yes" ] && echo "4" || echo "3")  # keepalived.conf generation
-KEEPALIVED_SERVICE_PHASE_NUM=$([ "$INSTALL_CHRONY" == "yes" ] && echo "5" || echo "4")
-FINAL_CHECKS_PHASE_NUM=$([ "$INSTALL_CHRONY" == "yes" ] && echo "6" || echo "5")
-
-# 1. Update package lists and install keepalived
-echo
-echo ">>> Phase $KEEPALIVED_INSTALL_PHASE_NUM: Updating package lists and installing keepalived..."
-apt update > /dev/null 2>&1 # Suppress apt update output for cleaner logs
-if apt install -y keepalived; then
-  echo "SUCCESS: Keepalived package installed."
-else
-  echo "ERROR: Failed to install keepalived. Please check for errors above. Exiting."
-  exit 1
-fi
-
-# 2. Create Pi-hole Health Check Script (/usr/local/bin/pihole_check.sh)
+# --- Phase: Health Check Script ---
 # This script is used by keepalived to monitor the health of the local Pi-hole service
 # and, if Chrony was installed, also the Chrony NTP synchronization status.
 # If Pi-hole FTL or selected Chrony is not healthy, keepalived can trigger a failover.
+CURRENT_SCRIPT_PHASE=$((CURRENT_SCRIPT_PHASE + 1))
 echo
-echo ">>> Phase $HEALTHCHECK_SCRIPT_PHASE_NUM: Creating Pi-hole health check script at /usr/local/bin/pihole_check.sh..."
+echo ">>> Phase $CURRENT_SCRIPT_PHASE: Creating Pi-hole health check script at /usr/local/bin/pihole_check.sh..."
 
 # Prepare the heredoc content for Chrony check, only if Chrony installation was selected.
 CHRONY_CHECK_HEREDOC_CONTENT=""
@@ -333,7 +327,18 @@ cat << EOF_HEALTHCHECK > /usr/local/bin/pihole_check.sh
 # Check if pihole-FTL service is active and running
 if systemctl is-active --quiet pihole-FTL.service; then
   # Pi-hole FTL is running.
-  : # Proceed to next check or exit 0
+
+  # Optional: For a more thorough check, you can uncomment the following lines.
+  # This performs a live DNS query against the local Pi-hole.
+  # Requires 'dnsutils' or 'bind-utils' package (e.g., sudo apt install dnsutils).
+  # if host example.com 127.0.0.1 > /dev/null 2>&1; then
+  #   exit 0 # Healthy - pihole-FTL is running and DNS query OK
+  # else
+  #   # FTL might be running but not resolving, or network issue
+  #   exit 1 # Unhealthy - DNS query failed
+  # fi
+
+  : # Proceed to next check (e.g., Chrony) or final success exit
 else
   # Pi-hole FTL is not running
   exit 1
@@ -355,8 +360,9 @@ fi
 # This generates the /etc/keepalived/keepalived.conf file based on user input.
 # This configuration tells keepalived how to manage the VIP and uses the
 # pihole_check.sh script (generated above) for health monitoring.
+CURRENT_SCRIPT_PHASE=$((CURRENT_SCRIPT_PHASE + 1))
 echo
-echo ">>> Phase $KEEPALIVED_CONFIG_PHASE_NUM: Creating keepalived configuration file (/etc/keepalived/keepalived.conf)..."
+echo ">>> Phase $CURRENT_SCRIPT_PHASE: Creating keepalived configuration file (/etc/keepalived/keepalived.conf)..."
 
 # Ensure the nopreempt line is only added if it's set (relevant for BACKUP role)
 ACTUAL_NOPREEMPT_CONFIG_LINE="$NOPREEMPT_LINE"
@@ -420,8 +426,9 @@ fi
 
 # 4. Enable and Start/Restart keepalived Service
 # Ensures keepalived starts on boot and applies the new configuration.
+CURRENT_SCRIPT_PHASE=$((CURRENT_SCRIPT_PHASE + 1))
 echo
-echo ">>> Phase $KEEPALIVED_SERVICE_PHASE_NUM: Enabling and restarting keepalived service..."
+echo ">>> Phase $CURRENT_SCRIPT_PHASE: Enabling and restarting keepalived service..."
 systemctl enable keepalived > /dev/null 2>&1 # Ensure it starts on boot
 if systemctl restart keepalived; then # Restart to apply new config, or start if not running
   echo "SUCCESS: Keepalived service enabled and restarted."
@@ -433,8 +440,9 @@ else
 fi
 
 # 5. Final Status Check and Information
+CURRENT_SCRIPT_PHASE=$((CURRENT_SCRIPT_PHASE + 1))
 echo
-echo ">>> Phase $FINAL_CHECKS_PHASE_NUM: Final checks and important information..."
+echo ">>> Phase $CURRENT_SCRIPT_PHASE: Final checks and important information..."
 sleep 3 # Give keepalived a moment to stabilize and log its initial state
 
 echo "Current keepalived service status:"
