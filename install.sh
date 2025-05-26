@@ -271,16 +271,14 @@ rtcsync
 EOF_CHRONY_CONF
     if [ -f /etc/chrony/chrony.conf ]; then
       echo "SUCCESS: Chrony configuration file created at /etc/chrony/chrony.conf."
-      systemctl restart chrony
+      systemctl restart chrony > /dev/null 2>&1
       systemctl enable chrony > /dev/null 2>&1
       echo "SUCCESS: Chrony service restarted and enabled."
     else
       echo "ERROR: Failed to create /etc/chrony/chrony.conf. Chrony configuration skipped."
-      # No exit here, as keepalived setup might still be desired.
     fi
   else
     echo "ERROR: Failed to install Chrony. Please check for errors above. Chrony setup skipped."
-    # No exit here, as keepalived setup might still be desired.
   fi
 else
   echo
@@ -499,4 +497,8 @@ echo "    are supported by keepalived for faster failover but will increase netw
 echo "    traffic and CPU load. If you require faster failover, you can manually edit"
 echo "    this value, but ensure you test the stability of your setup thoroughly,"
 echo "    especially on less powerful devices like Raspberry Pis."
+echo " 5. NTP Configuration for Clients: The Virtual IP (VIP) is for DNS (Pi-hole) services ONLY."
+echo "    Do NOT use the VIP as an NTP server endpoint for your NTP clients."
+echo "    If you intend for these Pi-hole nodes to serve time (not typical for a default Chrony client setup),"
+echo "    point your NTP clients directly to the real IP addresses of each Pi-hole node."
 echo "============================================================"
