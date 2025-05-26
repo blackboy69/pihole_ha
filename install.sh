@@ -191,6 +191,12 @@ while true; do
 done
 VIRTUAL_IP_CIDR="$VIP_ADDRESS/$VIP_CIDR_PREFIX" # Combine for keepalived.conf
 
+# 8. Optional Chrony NTP Synchronization: Prompt user whether to install Chrony.
+# The $INSTALL_CHRONY variable will control this optional phase and its
+# inclusion in the health check script.
+echo
+INSTALL_CHRONY=$(prompt_yes_no "Do you want to install and configure Chrony for NTP synchronization on this node? (Recommended if you don't have a reliable local NTP source)" "yes")
+
 # --- Display Summary and Confirm Before Proceeding ---
 echo
 echo "============================================================"
@@ -207,8 +213,11 @@ echo " Shared Settings (verify these are identical on both nodes):"
 echo " Virtual IP (VIP):    $VIRTUAL_IP_CIDR"
 echo " Virtual Router ID:   $VIRTUAL_ROUTER_ID"
 echo " Auth Password:       [set - will not be displayed for security]"
+if [ "$INSTALL_CHRONY" == "yes" ]; then
+  echo " Chrony NTP Sync:     Yes"
+fi
 echo "============================================================"
-CONFIRMATION=$(prompt_yes_no "Proceed with this configuration and install/configure keepalived?" "yes")
+CONFIRMATION=$(prompt_yes_no "Proceed with this configuration and install/configure keepalived (and Chrony if selected)?" "yes")
 
 if [[ "$CONFIRMATION" != "yes" ]]; then
   echo "Setup aborted by user. No changes were made."
@@ -218,9 +227,65 @@ fi
 # --- Start Actual System Setup ---
 # The following sections install packages and write configuration files.
 
+# X. Install and Configure Chrony (Conditional Phase)
+# This phase only runs if the user opted to install Chrony.
+CHRONY_PHASE_NUM=1 # This will be the first phase if executed.
+if [ "$INSTALL_CHRONY" == "yes" ]; then
+  echo
+  echo ">>> Phase $CHRONY_PHASE_NUM: Installing and configuring Chrony..."
+  apt update > /dev/null 2>&1
+  if apt install -y chrony; then
+    echo "SUCCESS: Chrony package installed."
+    # Create Chrony configuration file /etc/chrony/chrony.conf
+    cat << EOF_CHRONY_CONF > /etc/chrony/chrony.conf
+# This file is managed by the Pi-hole HA setup script.
+# Use a general set of NTP pool servers and include Debian's pool for broad compatibility.
+pool 0.pool.ntp.org iburst
+pool 1.pool.ntp.org iburst
+pool 2.pool.ntp.org iburst
+pool 3.pool.ntp.org iburst
+pool 2.debian.pool.ntp.org iburst
+# Allow the system clock to be stepped in the first three updates
+# if its offset is larger than 1 second.
+makestep 1.0 3
+# Allow the system clock to be skewed to allow for large errors.
+maxupdateskew 100.0
+# Enable kernel synchronization of the real-time clock (RTC).
+rtcsync
+# Deny NTP client access from other networks.
+# allow 192.168.0.0/16 # Example: uncomment and modify to allow LAN clients
+EOF_CHRONY_CONF
+    if [ -f /etc/chrony/chrony.conf ]; then
+      echo "SUCCESS: Chrony configuration file created at /etc/chrony/chrony.conf."
+      systemctl restart chrony
+      systemctl enable chrony > /dev/null 2>&1
+      echo "SUCCESS: Chrony service restarted and enabled."
+    else
+      echo "ERROR: Failed to create /etc/chrony/chrony.conf. Chrony configuration skipped."
+      # No exit here, as keepalived setup might still be desired.
+    fi
+  else
+    echo "ERROR: Failed to install Chrony. Please check for errors above. Chrony setup skipped."
+    # No exit here, as keepalived setup might still be desired.
+  fi
+  # CHRONY_PHASE_NUM is not strictly needed beyond this point for this script's logic,
+  # as subsequent phase numbers are dynamically determined.
+else
+  echo
+  echo "Skipping Chrony installation as per user choice."
+fi
+
+# Adjust subsequent phase numbers for user messages based on whether Chrony was installed.
+# If Chrony was installed, keepalived-related phases start from 2. Otherwise, they start from 1.
+KEEPALIVED_INSTALL_PHASE_NUM=$([ "$INSTALL_CHRONY" == "yes" ] && echo "2" || echo "1")
+HEALTHCHECK_SCRIPT_PHASE_NUM=$([ "$INSTALL_CHRONY" == "yes" ] && echo "3" || echo "2") # Pi-hole health check script
+KEEPALIVED_CONFIG_PHASE_NUM=$([ "$INSTALL_CHRONY" == "yes" ] && echo "4" || echo "3")  # keepalived.conf generation
+KEEPALIVED_SERVICE_PHASE_NUM=$([ "$INSTALL_CHRONY" == "yes" ] && echo "5" || echo "4")
+FINAL_CHECKS_PHASE_NUM=$([ "$INSTALL_CHRONY" == "yes" ] && echo "6" || echo "5")
+
 # 1. Update package lists and install keepalived
 echo
-echo ">>> Phase 1: Updating package lists and installing keepalived..."
+echo ">>> Phase $KEEPALIVED_INSTALL_PHASE_NUM: Updating package lists and installing keepalived..."
 apt update > /dev/null 2>&1 # Suppress apt update output for cleaner logs
 if apt install -y keepalived; then
   echo "SUCCESS: Keepalived package installed."
@@ -229,31 +294,53 @@ else
   exit 1
 fi
 
-# 2. Create Pi-hole Health Check Script
-# This script is used by keepalived to monitor the health of the local Pi-hole service.
-# If Pi-hole FTL (DNS resolver) is not running, keepalived can trigger a failover.
+# 2. Create Pi-hole Health Check Script (/usr/local/bin/pihole_check.sh)
+# This script is used by keepalived to monitor the health of the local Pi-hole service
+# and, if Chrony was installed, also the Chrony NTP synchronization status.
+# If Pi-hole FTL or selected Chrony is not healthy, keepalived can trigger a failover.
 echo
-echo ">>> Phase 2: Creating Pi-hole health check script at /usr/local/bin/pihole_check.sh..."
-cat << 'EOF_HEALTHCHECK' > /usr/local/bin/pihole_check.sh
+echo ">>> Phase $HEALTHCHECK_SCRIPT_PHASE_NUM: Creating Pi-hole health check script at /usr/local/bin/pihole_check.sh..."
+
+# Prepare the heredoc content for Chrony check, only if Chrony installation was selected.
+CHRONY_CHECK_HEREDOC_CONTENT=""
+if [ "$INSTALL_CHRONY" == "yes" ]; then
+  CHRONY_CHECK_HEREDOC_CONTENT=$(cat << 'EOF_INNER_CHRONY_CHECK'
+
+# Check Chrony status as it was selected during install.
+# This section is only included in pihole_check.sh if Chrony installation was chosen.
+if command -v chronyc > /dev/null; then
+  if chronyc tracking | grep -q 'Leap status.*Normal'; then
+    # Chrony is synchronized, proceed
+    :
+  else
+    # Chrony is installed but not synchronized
+    exit 1
+  fi
+else
+  # chronyc command not found, but Chrony installation was requested.
+  # This indicates an issue, so treat as unhealthy.
+  exit 1
+fi
+EOF_INNER_CHRONY_CHECK
+)
+fi
+
+cat << EOF_HEALTHCHECK > /usr/local/bin/pihole_check.sh
 #!/bin/bash
-# Health check script for Pi-hole FTL service.
-# Exits with 0 if healthy, 1 if not.
+# Health check script for Pi-hole FTL service and, if configured, Chrony.
+# Exits with 0 if healthy (all required services are up and synchronized), 1 if not.
 
 # Check if pihole-FTL service is active and running
 if systemctl is-active --quiet pihole-FTL.service; then
-  # Optional: For a more thorough check, you can uncomment the following lines.
-  # This performs a live DNS query against the local Pi-hole.
-  # Requires 'dnsutils' or 'bind-utils' package (e.g., sudo apt install dnsutils).
-  # if host example.com 127.0.0.1 > /dev/null 2>&1; then
-  #   exit 0 # Healthy - pihole-FTL is running and DNS query OK
-  # else
-  #   # FTL might be running but not resolving, or network issue
-  #   exit 1 # Unhealthy - DNS query failed
-  # fi
-  exit 0 # Healthy - pihole-FTL service is running
+  # Pi-hole FTL is running.
+  : # Proceed to next check or exit 0
 else
-  exit 1 # Unhealthy - pihole-FTL service is not running
+  # Pi-hole FTL is not running
+  exit 1
 fi
+$CHRONY_CHECK_HEREDOC_CONTENT
+# If all checks passed (i.e., script hasn't exited with 1 yet)
+exit 0
 EOF_HEALTHCHECK
 
 chmod +x /usr/local/bin/pihole_check.sh # Make the script executable
@@ -266,8 +353,10 @@ fi
 
 # 3. Configure keepalived
 # This generates the /etc/keepalived/keepalived.conf file based on user input.
+# This configuration tells keepalived how to manage the VIP and uses the
+# pihole_check.sh script (generated above) for health monitoring.
 echo
-echo ">>> Phase 3: Creating keepalived configuration file (/etc/keepalived/keepalived.conf)..."
+echo ">>> Phase $KEEPALIVED_CONFIG_PHASE_NUM: Creating keepalived configuration file (/etc/keepalived/keepalived.conf)..."
 
 # Ensure the nopreempt line is only added if it's set (relevant for BACKUP role)
 ACTUAL_NOPREEMPT_CONFIG_LINE="$NOPREEMPT_LINE"
@@ -280,9 +369,9 @@ cat << EOF_KEEPALIVED_CONF > /etc/keepalived/keepalived.conf
 # Role: $MY_ROLE
 # Interface: $MY_INTERFACE
 
-# Defines the health check script for Pi-hole
+# Defines the health check script for Pi-hole (and potentially Chrony)
 vrrp_script check_pihole {
-    script "/usr/local/bin/pihole_check.sh"  # Path to the health check script
+    script "/usr/local/bin/pihole_check.sh"  # Path to the health check script (monitors Pi-hole & Chrony if selected)
     interval 2                               # Run check_pihole every 2 seconds
     weight 2                                 # Add this to priority if script succeeds (increases chance of being MASTER)
                                              # Subtract if script fails (decreases chance, helps trigger failover)
@@ -298,6 +387,8 @@ vrrp_instance VI_PIHOLE {
     priority $MY_PRIORITY                   # Higher value takes precedence
     $ACTUAL_NOPREEMPT_CONFIG_LINE           # Adds 'nopreempt' line if configured for BACKUP
     advert_int 1                            # VRRP advertisement interval (seconds)
+                                            # Sub-second intervals (e.g., 0.5 for 500ms) are supported but may
+                                            # increase network traffic and CPU load. Test thoroughly if changing.
 
     # Authentication for VRRP messages - MUST match on both nodes
     authentication {
@@ -320,6 +411,8 @@ EOF_KEEPALIVED_CONF
 
 if [ -f /etc/keepalived/keepalived.conf ]; then
   echo "SUCCESS: Keepalived configuration file created at /etc/keepalived/keepalived.conf."
+  chmod 600 /etc/keepalived/keepalived.conf
+  echo "Permissions for /etc/keepalived/keepalived.conf set to 600 (root read/write only)."
 else
   echo "ERROR: Failed to create /etc/keepalived/keepalived.conf. Exiting."
   exit 1
@@ -328,7 +421,7 @@ fi
 # 4. Enable and Start/Restart keepalived Service
 # Ensures keepalived starts on boot and applies the new configuration.
 echo
-echo ">>> Phase 4: Enabling and restarting keepalived service..."
+echo ">>> Phase $KEEPALIVED_SERVICE_PHASE_NUM: Enabling and restarting keepalived service..."
 systemctl enable keepalived > /dev/null 2>&1 # Ensure it starts on boot
 if systemctl restart keepalived; then # Restart to apply new config, or start if not running
   echo "SUCCESS: Keepalived service enabled and restarted."
@@ -341,7 +434,7 @@ fi
 
 # 5. Final Status Check and Information
 echo
-echo ">>> Phase 5: Final checks and important information..."
+echo ">>> Phase $FINAL_CHECKS_PHASE_NUM: Final checks and important information..."
 sleep 3 # Give keepalived a moment to stabilize and log its initial state
 
 echo "Current keepalived service status:"
@@ -392,4 +485,10 @@ echo "    blocklists, whitelists, etc.) between the two Pis. This script does NO
 echo "    handle Pi-hole settings synchronization. You might consider using Pi-hole's"
 echo "    Teleporter feature for manual backup/restore, 'rsync' for specific files,"
 echo "    or search for community-maintained synchronization solutions."
+echo " 4. VRRP Advertisement Interval: The script sets 'advert_int' to 1 second in"
+echo "    '/etc/keepalived/keepalived.conf'. Sub-second intervals (e.g., 'advert_int 0.5')"
+echo "    are supported by keepalived for faster failover but will increase network"
+echo "    traffic and CPU load. If you require faster failover, you can manually edit"
+echo "    this value, but ensure you test the stability of your setup thoroughly,"
+echo "    especially on less powerful devices like Raspberry Pis."
 echo "============================================================"

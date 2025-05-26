@@ -7,9 +7,14 @@ This script provides an interactive way to configure a two-node High Availabilit
 * **Interactive Setup:** Guides you through the configuration process with clear prompts.
 * **Automated `keepalived` Installation:** Installs `keepalived` if it's not already present.
 * **Automatic `keepalived.conf` Generation:** Creates the necessary `keepalived` configuration file based on your input.
-* **Pi-hole Health Checking:** Deploys a simple script that `keepalived` uses to monitor the status of the local Pi-hole FTL service. If the service fails, `keepalived` can trigger a failover to the healthy node.
+* **Secure `keepalived.conf` Permissions:** Sets the permissions of `/etc/keepalived/keepalived.conf` to `600` (root read/write only) to protect the VRRP authentication password.
+* **Optional Chrony NTP Synchronization:** Offers to install and configure `chrony` using a comprehensive default set of NTP pool servers (including general and Debian-specific sources) for reliable time synchronization on each node.
+* **Enhanced Health Checking:** The health check script (`/usr/local/bin/pihole_check.sh`) now:
+    * Monitors the status of the local Pi-hole FTL service.
+    * **Conditionally monitors `chrony` service health** if it was installed by the script. If `chrony` is installed but not synchronized, it's considered unhealthy, potentially triggering a failover.
 * **Support for Primary (MASTER) and Backup (BACKUP) Roles:** Allows designation of node roles and priorities.
 * **Optional `nopreempt` Configuration:** For the backup node, to prevent the VIP from "flapping" if the primary node recovers and fails repeatedly.
+* **VRRP `advert_int` Note:** While the script defaults the VRRP advertisement interval to 1 second, a comment is included in `keepalived.conf` for advanced users who might consider sub-second intervals (with caveats).
 
 ## Prerequisites
 
@@ -71,6 +76,7 @@ The script will ask you for the following information for each node:
 * **Virtual Router ID:** A number (0-255) that identifies the VRRP group. **Must be the same on both nodes.**
 * **Authentication Password:** A password used for VRRP communication between the nodes. **Must be the same on both nodes.**
 * **Virtual IP (VIP) Address and CIDR:** The shared IP address clients will use for DNS, along with its subnet prefix (e.g., `192.168.0.5` and `24`). **Must be the same on both nodes.**
+* **Optional Chrony Installation:** Whether to install and configure `chrony` for NTP synchronization on the current node.
 
 ## How It Works
 
@@ -81,8 +87,15 @@ The script will ask you for the following information for each node:
 * **Failover:** If the MASTER node fails (or its `keepalived` service detects a problem via the health check), one of the BACKUP nodes takes over the VIP and becomes the new MASTER.
 * **Health Check Script (`/usr/local/bin/pihole_check.sh`):**
     * This script is created by the setup process.
-    * `keepalived` periodically runs this script to check if the `pihole-FTL.service` (Pi-hole's DNS resolver) is active.
-    * If the script reports Pi-hole as unhealthy, `keepalived` reduces the node's effective priority, potentially triggering a failover to the other node if it's healthy and has a higher effective priority.
+    * `keepalived` periodically runs this script to check:
+        1.  If the `pihole-FTL.service` (Pi-hole's DNS resolver) is active.
+        2.  If `chrony` was installed via the script, it also checks if `chrony` is synchronized. An unsynchronized `chrony` is treated as a fault condition.
+    * If the script reports any monitored service as unhealthy, `keepalived` reduces the node's effective priority, potentially triggering a failover to the other node if it's healthy and has a higher effective priority.
+* **VRRP Advertisement Interval (`advert_int`):**
+    * The script configures `keepalived` with an `advert_int` of 1 second. This is the interval at which VRRP advertisements are sent.
+    * For advanced users, `keepalived` supports sub-second intervals (e.g., `0.5` for 500ms) for faster failover. However, this increases network traffic and CPU load. The generated `/etc/keepalived/keepalived.conf` includes a comment regarding this for manual adjustment and testing.
+* **Secure Configuration:**
+    * The script sets file permissions for `/etc/keepalived/keepalived.conf` to `600` (root read/write only). This is a security measure to protect the VRRP authentication password stored within this file.
 
 ## Post-Installation Steps
 
@@ -130,7 +143,7 @@ The script will ask you for the following information for each node:
     sudo /usr/local/bin/pihole_check.sh
     echo $?
     ```
-    It should output `0` if Pi-hole FTL is running, and `1` otherwise.
+    It should output `0` if Pi-hole FTL (and Chrony, if installed) is healthy, and `1` otherwise.
 * **Identical "Common Settings":** Double-check that `Virtual Router ID`, `Authentication Password`, and `Virtual IP CIDR` are absolutely identical in the `/etc/keepalived/keepalived.conf` files on both nodes.
 
 ## Disclaimer
