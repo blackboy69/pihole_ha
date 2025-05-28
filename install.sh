@@ -168,7 +168,7 @@ done
 # 7. VIRTUAL_IP_CIDR: The shared Virtual IP address and its subnet mask (CIDR notation).
 echo
 DEFAULT_VIP_EXAMPLE="192.168.0.5" # Example, user should adapt to their network
-DEFAULT_CIDR="24"             # Corresponds to 255.255.255.0
+DEFAULT_CIDR="24" # Corresponds to 255.255.255.0
 echo "The Virtual IP (VIP) is the IP address your clients will use as their DNS server."
 echo "It should be on the same subnet as your Pi-holes but not used by any other device."
 while true; do
@@ -191,12 +191,6 @@ while true; do
 done
 VIRTUAL_IP_CIDR="$VIP_ADDRESS/$VIP_CIDR_PREFIX" # Combine for keepalived.conf
 
-# 8. Optional Chrony NTP Synchronization: Prompt user whether to install Chrony.
-# The $INSTALL_CHRONY variable will control this optional phase and its
-# inclusion in the health check script.
-echo
-INSTALL_CHRONY=$(prompt_yes_no "Do you want to install and configure Chrony for NTP synchronization on this node? (Recommended if you don't have a reliable local NTP source)" "yes")
-
 # --- Display Summary and Confirm Before Proceeding ---
 echo
 echo "============================================================"
@@ -213,11 +207,8 @@ echo " Shared Settings (verify these are identical on both nodes):"
 echo " Virtual IP (VIP):    $VIRTUAL_IP_CIDR"
 echo " Virtual Router ID:   $VIRTUAL_ROUTER_ID"
 echo " Auth Password:       [set - will not be displayed for security]"
-if [ "$INSTALL_CHRONY" == "yes" ]; then
-  echo " Chrony NTP Sync:     Yes"
-fi
 echo "============================================================"
-CONFIRMATION=$(prompt_yes_no "Proceed with this configuration and install/configure keepalived (and Chrony if selected)?" "yes")
+CONFIRMATION=$(prompt_yes_no "Proceed with this configuration and install/configure keepalived?" "yes")
 
 if [[ "$CONFIRMATION" != "yes" ]]; then
   echo "Setup aborted by user. No changes were made."
@@ -241,85 +232,16 @@ else
   exit 1
 fi
 
-# --- Phase: Chrony Install (Conditional) ---
-# This phase only runs if the user opted to install Chrony.
-if [ "$INSTALL_CHRONY" == "yes" ]; then
-  CURRENT_SCRIPT_PHASE=$((CURRENT_SCRIPT_PHASE + 1))
-  echo
-  echo ">>> Phase $CURRENT_SCRIPT_PHASE: Installing and configuring Chrony..."
-  apt update > /dev/null 2>&1
-  if apt install -y chrony; then
-    echo "SUCCESS: Chrony package installed."
-    # Create Chrony configuration file /etc/chrony/chrony.conf
-    cat << EOF_CHRONY_CONF > /etc/chrony/chrony.conf
-# This file is managed by the Pi-hole HA setup script.
-# Use a general set of NTP pool servers and include Debian's pool for broad compatibility.
-pool 0.pool.ntp.org iburst
-pool 1.pool.ntp.org iburst
-pool 2.pool.ntp.org iburst
-pool 3.pool.ntp.org iburst
-pool 2.debian.pool.ntp.org iburst
-# Allow the system clock to be stepped in the first three updates
-# if its offset is larger than 1 second.
-makestep 1.0 3
-# Allow the system clock to be skewed to allow for large errors.
-maxupdateskew 100.0
-# Enable kernel synchronization of the real-time clock (RTC).
-rtcsync
-# Deny NTP client access from other networks.
-# allow 192.168.0.0/16 # Example: uncomment and modify to allow LAN clients
-EOF_CHRONY_CONF
-    if [ -f /etc/chrony/chrony.conf ]; then
-      echo "SUCCESS: Chrony configuration file created at /etc/chrony/chrony.conf."
-      systemctl restart chrony > /dev/null 2>&1
-      systemctl enable chrony > /dev/null 2>&1
-      echo "SUCCESS: Chrony service restarted and enabled."
-    else
-      echo "ERROR: Failed to create /etc/chrony/chrony.conf. Chrony configuration skipped."
-    fi
-  else
-    echo "ERROR: Failed to install Chrony. Please check for errors above. Chrony setup skipped."
-  fi
-else
-  echo
-  echo "Skipping Chrony installation as per user choice." # This message is not numbered as a phase
-fi
-
 # --- Phase: Health Check Script ---
-# This script is used by keepalived to monitor the health of the local Pi-hole service
-# and, if Chrony was installed, also the Chrony NTP synchronization status.
-# If Pi-hole FTL or selected Chrony is not healthy, keepalived can trigger a failover.
+# This script is used by keepalived to monitor the health of the local Pi-hole service.
+# If Pi-hole FTL is not healthy, keepalived can trigger a failover.
 CURRENT_SCRIPT_PHASE=$((CURRENT_SCRIPT_PHASE + 1))
 echo
 echo ">>> Phase $CURRENT_SCRIPT_PHASE: Creating Pi-hole health check script at /usr/local/bin/pihole_check.sh..."
 
-# Prepare the heredoc content for Chrony check, only if Chrony installation was selected.
-CHRONY_CHECK_HEREDOC_CONTENT=""
-if [ "$INSTALL_CHRONY" == "yes" ]; then
-  CHRONY_CHECK_HEREDOC_CONTENT=$(cat << 'EOF_INNER_CHRONY_CHECK'
-
-# Check Chrony status as it was selected during install.
-# This section is only included in pihole_check.sh if Chrony installation was chosen.
-if command -v chronyc > /dev/null; then
-  if chronyc tracking | grep -q 'Leap status.*Normal'; then
-    # Chrony is synchronized, proceed
-    :
-  else
-    # Chrony is installed but not synchronized
-    exit 1
-  fi
-else
-  # chronyc command not found, but Chrony installation was requested.
-  # This indicates an issue, so treat as unhealthy.
-  exit 1
-fi
-EOF_INNER_CHRONY_CHECK
-)
-fi
-
 cat << EOF_HEALTHCHECK > /usr/local/bin/pihole_check.sh
 #!/bin/bash
-# Health check script for Pi-hole FTL service and, if configured, Chrony.
+# Health check script for Pi-hole FTL service.
 # Exits with 0 if healthy (all required services are up and synchronized), 1 if not.
 
 # Check if pihole-FTL service is active and running
@@ -336,12 +258,12 @@ if systemctl is-active --quiet pihole-FTL.service; then
   #   exit 1 # Unhealthy - DNS query failed
   # fi
 
-  : # Proceed to next check (e.g., Chrony) or final success exit
+  : # Proceed to final success exit
 else
   # Pi-hole FTL is not running
   exit 1
 fi
-$CHRONY_CHECK_HEREDOC_CONTENT
+
 # If all checks passed (i.e., script hasn't exited with 1 yet)
 exit 0
 EOF_HEALTHCHECK
@@ -373,9 +295,9 @@ cat << EOF_KEEPALIVED_CONF > /etc/keepalived/keepalived.conf
 # Role: $MY_ROLE
 # Interface: $MY_INTERFACE
 
-# Defines the health check script for Pi-hole (and potentially Chrony)
+# Defines the health check script for Pi-hole
 vrrp_script check_pihole {
-    script "/usr/local/bin/pihole_check.sh"  # Path to the health check script (monitors Pi-hole & Chrony if selected)
+    script "/usr/local/bin/pihole_check.sh"  # Path to the health check script (monitors Pi-hole)
     interval 2                               # Run check_pihole every 2 seconds
     weight 2                                 # Add this to priority if script succeeds (increases chance of being MASTER)
                                              # Subtract if script fails (decreases chance, helps trigger failover)
