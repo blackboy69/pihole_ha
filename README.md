@@ -8,7 +8,8 @@ This script provides an interactive way to configure a two-node High Availabilit
 * **Automated `keepalived` Installation:** Installs `keepalived` if it's not already present.
 * **Automatic `keepalived.conf` Generation:** Creates the necessary `keepalived` configuration file based on your input.
 * **Secure `keepalived.conf` Permissions:** Sets the permissions of `/etc/keepalived/keepalived.conf` to `600` (root read/write only) to protect the VRRP authentication password.
-* **Pi-hole FTL Health Checking:** Deploys a script (`/usr/local/bin/pihole_check.sh`) that `keepalived` uses to monitor the status of the local `pihole-FTL.service`. If the FTL service fails, `keepalived` can trigger a VIP * **Support for Primary (MASTER) and Backup (BACKUP) Roles:** Allows designation of node roles and priorities.
+* **Pi-hole FTL Health Checking:** Deploys a script (`/usr/local/bin/pihole_check.sh`) that `keepalived` uses to monitor the status of the local `pihole-FTL.service`. If the FTL service fails, `keepalived` can trigger a VIP 
+* **Support for Primary (MASTER) and Backup (BACKUP) Roles:** Allows designation of node roles and priorities.
 * **Optional `nopreempt` Configuration:** For the backup node, to prevent the VIP from "flapping" if the primary node recovers and fails repeatedly.
 * **VRRP `advert_int` Note:** Includes a comment in the generated `keepalived.conf` regarding the `advert_int` setting for advanced users considering sub-second failover (with caveats).
 
