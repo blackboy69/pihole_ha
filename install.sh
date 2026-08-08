@@ -256,7 +256,7 @@ cat << 'EOF_HEALTHCHECK' > /usr/local/bin/pihole_check.sh
 
 # Perform a direct local DNS query for 'pi.hole' using localhost.
 # A 2-second timeout prevents the script from hanging.
-if nslookup -timeout=2 pi.hole 127.0.0.1 > /dev/null 2>&1; then
+if nslookup -timeout=1 pi.hole 127.0.0.1 > /dev/null 2>&1; then
   exit 0
 else
   exit 1
