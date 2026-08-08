@@ -250,32 +250,21 @@ CURRENT_SCRIPT_PHASE=$((CURRENT_SCRIPT_PHASE + 1))
 echo
 echo ">>> Phase $CURRENT_SCRIPT_PHASE: Creating Pi-hole health check script at /usr/local/bin/pihole_check.sh..."
 
-cat << EOF_HEALTHCHECK > /usr/local/bin/pihole_check.sh
+cat << 'EOF_HEALTHCHECK' > /usr/local/bin/pihole_check.sh
 #!/bin/bash
-# Health check script for Pi-hole FTL service.
-# Exits with 0 if healthy (all required services are up and synchronized), 1 if not.
+# Health check script for Pi-hole.
+# Exits with 0 if healthy, 1 if not.
 
-# Check if pihole-FTL service is active and running
-if systemctl is-active --quiet pihole-FTL.service; then
-  # Pi-hole FTL is running.
-
-  # Optional: For a more thorough check, you can uncomment the following lines.
-  # This performs a live DNS query against the local Pi-hole.
-  # Requires 'dnsutils' or 'bind-utils' package (e.g., sudo apt install dnsutils).
-  # if host example.com 127.0.0.1 > /dev/null 2>&1; then
-  #    exit 0 # Healthy - pihole-FTL is running and DNS query OK
-  # else
-  #    # FTL might be running but not resolving, or network issue
-  #    exit 1 # Unhealthy - DNS query failed
-  # fi
-
+# Check if pihole status shows FTL/DNS is active and listening
+if pihole status | grep -qi "listening"; then
+  # Pi-hole reports that it is actively listening
   : # Proceed to final success exit
 else
-  # Pi-hole FTL is not running
+  # Pi-hole is not listening, trigger failover
   exit 1
 fi
 
-# If all checks passed (i.e., script hasn't exited with 1 yet)
+# If all checks passed
 exit 0
 EOF_HEALTHCHECK
 
