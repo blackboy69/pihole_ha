@@ -245,7 +245,6 @@ fi
 
 # --- Phase: Health Check Script ---
 # This script is used by keepalived to monitor the health of the local Pi-hole service.
-# If Pi-hole FTL is not healthy, keepalived can trigger a failover.
 CURRENT_SCRIPT_PHASE=$((CURRENT_SCRIPT_PHASE + 1))
 echo
 echo ">>> Phase $CURRENT_SCRIPT_PHASE: Creating Pi-hole health check script at /usr/local/bin/pihole_check.sh..."
@@ -253,19 +252,22 @@ echo ">>> Phase $CURRENT_SCRIPT_PHASE: Creating Pi-hole health check script at /
 cat << 'EOF_HEALTHCHECK' > /usr/local/bin/pihole_check.sh
 #!/bin/bash
 # Health check script for Pi-hole.
-# Exits with 0 if healthy, 1 if not.
+# Exits with 0 if healthy and blocking, 1 if disabled or down.
 
-# Check if pihole status shows FTL/DNS is active and listening
-if pihole status | grep -qi "listening"; then
-  # Pi-hole reports that it is actively listening
-  : # Proceed to final success exit
+# Export PATH so keepalived can find the pihole binary
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# 'pihole status web' outputs a single integer:
+#  1  : FTL is listening and blocking is enabled
+#  0  : FTL is listening but blocking is disabled
+# -1  : FTL is not listening (DNS down)
+PIHOLE_STATUS=$(pihole status web 2>/dev/null)
+
+if [ "$PIHOLE_STATUS" == "1" ]; then
+  exit 0
 else
-  # Pi-hole is not listening, trigger failover
   exit 1
 fi
-
-# If all checks passed
-exit 0
 EOF_HEALTHCHECK
 
 chmod +x /usr/local/bin/pihole_check.sh # Make the script executable
