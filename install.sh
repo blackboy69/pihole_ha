@@ -89,11 +89,18 @@ done
 echo
 echo "Available network interfaces (excluding loopback 'lo'):"
 ip -br a | awk '{print "  - " $1}' | grep -v "lo" # Shows current interfaces with their IPs
-INTERFACES_LIST=$(ls /sys/class/net | grep -v "lo" | tr '\n' ' ') # Lists interface names
-echo "(Common interface names might be: $INTERFACES_LIST)"
+
+# Attempt to auto-detect the default active interface
+DEFAULT_INTERFACE=$(ip -4 route ls | grep default | grep -Eo 'dev [^ ]+' | awk '{print $2}' | head -1)
+# Fallback to the first non-loopback interface if no default route is found
+if [ -z "$DEFAULT_INTERFACE" ]; then
+    DEFAULT_INTERFACE=$(ls /sys/class/net | grep -v "lo" | head -n 1)
+fi
+
 echo "Ensure you choose the interface connected to your main LAN where the VIP will reside."
 while true; do
-  read -r -p "Enter the network interface name for keepalived (e.g., eth0, enp6s18): " MY_INTERFACE < /dev/tty
+  read -r -p "Enter the network interface name for keepalived [$DEFAULT_INTERFACE]: " MY_INTERFACE_INPUT < /dev/tty
+  MY_INTERFACE="${MY_INTERFACE_INPUT:-$DEFAULT_INTERFACE}"
   if [ -z "$MY_INTERFACE" ]; then
     echo "Interface name cannot be empty."
   elif ! ip link show "$MY_INTERFACE" > /dev/null 2>&1; then # Check if interface exists
@@ -121,20 +128,10 @@ while true; do
   fi
 done
 
-# 4. NOPREEMPT_LINE: Specific to BACKUP node. If set, BACKUP won't give up VIP easily.
-NOPREEMPT_LINE="" # Initialize to empty (no nopreempt)
-if [ "$MY_ROLE" == "BACKUP" ]; then
-  echo
-  NOPREEMPT_CHOICE=$(prompt_yes_no "Should this BACKUP node use 'nopreempt'? (Recommended 'yes'. If 'yes', it keeps the VIP once acquired, even if MASTER returns, until this BACKUP node itself fails. This prevents VIP 'flapping')" "yes")
-  if [ "$NOPREEMPT_CHOICE" == "yes" ]; then
-    NOPREEMPT_LINE="nopreempt" # This string will be added to keepalived.conf
-  fi
-fi
-
 echo
 echo "--- Common Settings (these MUST be identical on both Pi-hole HA nodes) ---"
 
-# 5. VIRTUAL_ROUTER_ID: An identifier for the VRRP group. Must match on both nodes.
+# 4. VIRTUAL_ROUTER_ID: An identifier for the VRRP group. Must match on both nodes.
 DEFAULT_VRID="51" # Arbitrary default, 0-255
 while true; do
   read -r -p "Enter the Virtual Router ID (numeric, 0-255, must be same on both nodes) [Default: $DEFAULT_VRID]: " VRID_INPUT < /dev/tty
@@ -146,7 +143,7 @@ while true; do
   fi
 done
 
-# 6. AUTH_PASS: Password for VRRP authentication between nodes. Must match.
+# 5. AUTH_PASS: Password for VRRP authentication between nodes. Must match.
 echo
 echo "The VRRP authentication password MUST be identical on both HA nodes."
 echo "Choose a strong password."
@@ -165,14 +162,23 @@ while true; do
   fi
 done
 
-# 7. VIRTUAL_IP_CIDR: The shared Virtual IP address and its subnet mask (CIDR notation).
+# 6. VIRTUAL_IP_CIDR: The shared Virtual IP address and its subnet mask (CIDR notation).
 echo
-DEFAULT_VIP_EXAMPLE="192.168.0.5" # Example, user should adapt to their network
-DEFAULT_CIDR="24" # Corresponds to 255.255.255.0
 echo "The Virtual IP (VIP) is the IP address your clients will use as their DNS server."
 echo "It should be on the same subnet as your Pi-holes but not used by any other device."
+
+# Attempt to dynamically construct the .5 VIP address based on the selected interface's subnet
+MY_CURRENT_IP=$(ip -4 addr show dev "$MY_INTERFACE" 2>/dev/null | grep -w inet | awk '{print $2}' | cut -d/ -f1 | head -n 1)
+if [ -n "$MY_CURRENT_IP" ]; then
+    SUBNET_PREFIX=$(echo "$MY_CURRENT_IP" | cut -d. -f1-3)
+    DEFAULT_VIP="${SUBNET_PREFIX}.5"
+else
+    DEFAULT_VIP="192.168.0.5" # Fallback if IP cannot be determined
+fi
+
 while true; do
-  read -r -p "Enter the shared Virtual IP (VIP) address (e.g., $DEFAULT_VIP_EXAMPLE): " VIP_ADDRESS < /dev/tty
+  read -r -p "Enter the shared Virtual IP (VIP) address [$DEFAULT_VIP]: " VIP_ADDRESS_INPUT < /dev/tty
+  VIP_ADDRESS="${VIP_ADDRESS_INPUT:-$DEFAULT_VIP}"
   # Basic IPv4 format validation
   if [[ "$VIP_ADDRESS" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
     break
@@ -180,6 +186,8 @@ while true; do
     echo "Invalid IP address format. Please use format X.X.X.X (e.g., 192.168.1.100)."
   fi
 done
+
+DEFAULT_CIDR="24" # Corresponds to 255.255.255.0
 while true; do
   read -r -p "Enter the CIDR prefix for the VIP's subnet (e.g., 24 for a 255.255.255.0 subnet) [Default: $DEFAULT_CIDR]: " VIP_CIDR_PREFIX_INPUT < /dev/tty
   VIP_CIDR_PREFIX="${VIP_CIDR_PREFIX_INPUT:-$DEFAULT_CIDR}"
@@ -199,9 +207,6 @@ echo "------------------------------------------------------------"
 echo " Role:          $MY_ROLE"
 echo " Interface:     $MY_INTERFACE"
 echo " Priority:      $MY_PRIORITY"
-if [ "$MY_ROLE" == "BACKUP" ]; then # Only show nopreempt for BACKUP
-  echo " Nopreempt:     '$NOPREEMPT_LINE'"
-fi
 echo "------------------------------------------------------------"
 echo " Shared Settings (verify these are identical on both nodes):"
 echo " Virtual IP (VIP):    $VIRTUAL_IP_CIDR"
@@ -223,9 +228,9 @@ CURRENT_SCRIPT_PHASE=1 # Initialize the phase counter, first phase will be 2.
 # --- Phase: Keepalived Install ---
 CURRENT_SCRIPT_PHASE=$((CURRENT_SCRIPT_PHASE + 1))
 echo
-echo ">>> Phase $CURRENT_SCRIPT_PHASE: Updating package lists and installing keepalived and dnsutils..."
+echo ">>> Phase $CURRENT_SCRIPT_PHASE: Updating package lists and installing keepalived..."
 apt update > /dev/null 2>&1 # Suppress apt update output for cleaner logs
-if apt install -y keepalived dnsutils; then
+if apt install -y keepalived; then
   echo "SUCCESS: Packages installed."
 else
   echo "ERROR: Failed to install packages. Please check for errors above. Exiting."
@@ -251,12 +256,10 @@ echo ">>> Phase $CURRENT_SCRIPT_PHASE: Creating Pi-hole health check script at /
 
 cat << 'EOF_HEALTHCHECK' > /usr/local/bin/pihole_check.sh
 #!/bin/bash
-# Health check script for Pi-hole.
-# Exits with 0 if healthy and answering queries, 1 if down or unresponsive.
+# Health check script for Pi-hole HA.
+# Instantly checks the kernel to see if port 53 (TCP or UDP) is actively listening.
 
-# Perform a direct local DNS query for 'pi.hole' using localhost.
-# A 2-second timeout prevents the script from hanging.
-if nslookup -timeout=1 pi.hole 127.0.0.1 > /dev/null 2>&1; then
+if ss -lntu | grep -q -E '(:53\s)'; then
   exit 0
 else
   exit 1
@@ -278,9 +281,6 @@ fi
 CURRENT_SCRIPT_PHASE=$((CURRENT_SCRIPT_PHASE + 1))
 echo
 echo ">>> Phase $CURRENT_SCRIPT_PHASE: Creating keepalived configuration file (/etc/keepalived/keepalived.conf)..."
-
-# Ensure the nopreempt line is only added if it's set (relevant for BACKUP role)
-ACTUAL_NOPREEMPT_CONFIG_LINE="$NOPREEMPT_LINE"
 
 # Using a heredoc to write the keepalived configuration file.
 # Variables are substituted from the values gathered earlier.
@@ -311,7 +311,6 @@ vrrp_instance VI_PIHOLE {
     interface $MY_INTERFACE                  # Network interface to use
     virtual_router_id $VIRTUAL_ROUTER_ID     # Must be the same on both nodes
     priority $MY_PRIORITY                    # Higher value takes precedence
-    $ACTUAL_NOPREEMPT_CONFIG_LINE            # Adds 'nopreempt' line if configured for BACKUP
     advert_int 1                             # VRRP advertisement interval (seconds)
                                              # Sub-second intervals (e.g., 0.5 for 500ms) are supported but may
                                              # increase network traffic and CPU load. Test thoroughly if changing.
