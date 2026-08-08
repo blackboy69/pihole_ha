@@ -223,12 +223,12 @@ CURRENT_SCRIPT_PHASE=1 # Initialize the phase counter, first phase will be 2.
 # --- Phase: Keepalived Install ---
 CURRENT_SCRIPT_PHASE=$((CURRENT_SCRIPT_PHASE + 1))
 echo
-echo ">>> Phase $CURRENT_SCRIPT_PHASE: Updating package lists and installing keepalived..."
+echo ">>> Phase $CURRENT_SCRIPT_PHASE: Updating package lists and installing keepalived and dnsutils..."
 apt update > /dev/null 2>&1 # Suppress apt update output for cleaner logs
-if apt install -y keepalived; then
-  echo "SUCCESS: Keepalived package installed."
+if apt install -y keepalived dnsutils; then
+  echo "SUCCESS: Packages installed."
 else
-  echo "ERROR: Failed to install keepalived. Please check for errors above. Exiting."
+  echo "ERROR: Failed to install packages. Please check for errors above. Exiting."
   exit 1
 fi
 
@@ -252,18 +252,11 @@ echo ">>> Phase $CURRENT_SCRIPT_PHASE: Creating Pi-hole health check script at /
 cat << 'EOF_HEALTHCHECK' > /usr/local/bin/pihole_check.sh
 #!/bin/bash
 # Health check script for Pi-hole.
-# Exits with 0 if healthy and blocking, 1 if disabled or down.
+# Exits with 0 if healthy and answering queries, 1 if down or unresponsive.
 
-# Export PATH so keepalived can find the pihole binary
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-# 'pihole status web' outputs a single integer:
-#  1  : FTL is listening and blocking is enabled
-#  0  : FTL is listening but blocking is disabled
-# -1  : FTL is not listening (DNS down)
-PIHOLE_STATUS=$(pihole status web 2>/dev/null)
-
-if [ "$PIHOLE_STATUS" == "1" ]; then
+# Perform a direct local DNS query for 'pi.hole' using localhost.
+# A 2-second timeout prevents the script from hanging.
+if nslookup -timeout=2 pi.hole 127.0.0.1 > /dev/null 2>&1; then
   exit 0
 else
   exit 1
