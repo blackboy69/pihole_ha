@@ -1,157 +1,54 @@
-# Pi-hole High Availability (HA) Setup Script using Keepalived
+# Pi-hole High Availability (HA) Setup Scripts
 
-This script provides an interactive way to configure a two-node High Availability (HA) setup for your Pi-hole instances using `keepalived`. It automates the installation and configuration of `keepalived` to manage a Virtual IP (VIP) address that will float between your two Pi-hole servers, ensuring continuous DNS ad-blocking even if one Pi-hole node goes down.
+This repository contains scripts for running Pi-hole as a two-node high-availability
+(HA) setup, so DNS ad-blocking keeps working if one node goes down. Each script is
+interactive: it asks a few questions and handles installation and configuration for
+you.
 
-## Features
+There are two independent parts to set up:
 
-* **Interactive Setup:** Guides you through the configuration process with clear prompts.
-* **Automated `keepalived` Installation:** Installs `keepalived` if it's not already present.
-* **Automatic `keepalived.conf` Generation:** Creates the necessary `keepalived` configuration file based on your input.
-* **Secure `keepalived.conf` Permissions:** Sets the permissions of `/etc/keepalived/keepalived.conf` to `600` (root read/write only) to protect the VRRP authentication password.
-* **Pi-hole FTL Health Checking:** Deploys a script (`/usr/local/bin/pihole_check.sh`) that `keepalived` uses to monitor the status of the local `pihole-FTL.service`. If the FTL service fails, `keepalived` can trigger a VIP 
-* **Support for Primary (MASTER) and Backup (BACKUP) Roles:** Allows designation of node roles and priorities.
-* **Optional `nopreempt` Configuration:** For the backup node, to prevent the VIP from "flapping" if the primary node recovers and fails repeatedly.
-* **VRRP `advert_int` Note:** Includes a comment in the generated `keepalived.conf` regarding the `advert_int` setting for advanced users considering sub-second failover (with caveats).
+1. **Traffic routing** — how clients keep reaching a working Pi-hole when a node fails.
+2. **Configuration sync** — keeping both nodes' block lists and settings identical
+   (optional, but recommended).
+
+## 1. Choose a traffic routing method
+
+Two approaches are supported. Both give clients a single DNS server address to use;
+they differ in how failover works under the hood.
+
+| | Keepalived (VRRP) | BGP Anycast |
+|---|---|---|
+| Script | `install.sh` | `install-anycast.sh` **(beta, not yet extensively tested)** |
+| How it works | Uses the Virtual Router Redundancy Protocol (VRRP) to move a shared IP address between nodes. Only one node is active at a time. | Both nodes advertise the same IP address to your router via BGP (Border Gateway Protocol). The router sends traffic to whichever node is healthy. |
+| Requirements | None — works with any router or switch. | A router that supports BGP (e.g. a UniFi Cloud Gateway running UniFi OS 4.1.13+). |
+| Network layout | Both nodes must be on the same local network segment. | Nodes can be on different subnets or VLANs. |
+| Documentation | [README_keepalived.md](README_keepalived.md) | [README-anycast.md](README-anycast.md) |
+
+**Not sure which to use?** Start with `install.sh` (Keepalived). It requires no
+router-side configuration and is the simpler option.
+
+## 2. Sync configuration between nodes (recommended)
+
+> **Beta:** `install-sync.sh` is not yet extensively tested. Review what it does before
+> relying on it, and keep a Teleporter backup handy.
+
+Neither script above keeps Pi-hole's settings — block list subscriptions, allow/deny
+domains, groups, local DNS records — in sync between nodes. Without this step, the two
+nodes will gradually drift apart as you make changes on one but not the other.
+
+`install-sync.sh` handles this: one node is designated the source of truth, and the
+other node(s) periodically pull its settings using Pi-hole's built-in API. See
+[README-sync.md](README-sync.md) for details, including why this approach was chosen
+over a shared filesystem or `rsync`.
 
 ## Prerequisites
 
-Before running this script on each Pi-hole node, ensure you have:
+- Two or more Raspberry Pis (or similar Debian-based systems), each with Pi-hole
+  already installed and a static IP address.
+- Root access (`sudo`), and `curl` or `wget` if running a script directly from GitHub.
 
-1.  **Two Raspberry Pis (or similar Debian-based systems):** Each running a functional Pi-hole installation.
-2.  **Static IP Addresses:** Each Pi-hole node should have its own unique static IP address (these are *not* the VIP).
-3.  **Network Connectivity:** Both Pis must be on the same network/subnet.
-4.  **`sudo` Access:** The script requires root privileges to install packages and modify system configurations.
-5.  **`curl` or `wget`:** Required if you plan to run the script directly from GitHub. Most systems have these pre-installed. If not:
-    ```bash
-    sudo apt update && sudo apt install -y curl wget
-    ```
-6.  **A Chosen Virtual IP (VIP) Address:** This IP address must be on the same subnet as your Pi-holes but **not** currently used by any other device. This will be the IP address your clients use as their DNS server.
+## Documentation
 
-## How to Use
-
-You need to run this script on **both** of your Pi-hole nodes. Run it on your intended Primary/MASTER node first, then on your intended Backup/BACKUP node.
-
-### Option 1: Directly from GitHub (Recommended)
-
-This method downloads and executes the latest version of the script.
-
-1.  **Open a terminal on your first Pi-hole node.**
-2.  Run the following command:
-    ```bash
-    curl -sSL https://raw.githubusercontent.com/blackboy69/pihole_ha/main/install.sh | sudo bash
-    ```
-3.  **Answer the interactive prompts** based on the role and settings for this specific node.
-4.  **Repeat steps 1-3 on your second Pi-hole node**, answering the prompts according to its role.
-
-**Security Note:** Always be cautious when running scripts directly from the internet with `sudo`. It's good practice to review the script's content by opening the URL in a browser before execution if you have any concerns.
-
-### Option 2: Download and Run Locally
-
-1.  **Download the script** (e.g., `install.sh`) to each Pi-hole node. You can clone the repository or download the raw file.
-    Using `curl`:
-    ```bash
-    curl -sSL -o install.sh https://raw.githubusercontent.com/blackboy69/pihole_ha/main/install.sh
-    ```
-3.  **Make the script executable:**
-    ```bash
-    chmod +x install.sh
-    ```
-4.  **Run the script as root:**
-    ```bash
-    sudo ./install.sh
-    ```
-5.  **Answer the interactive prompts** for each node.
-
-## Configuration Prompts
-
-The script will ask you for the following information for each node:
-
-* **Role:** `MASTER` (primary) or `BACKUP`.
-* **Network Interface:** The network interface connected to your LAN (e.g., `eth0`, `enp6s18`).
-* **Priority:** A numeric value; the MASTER node should have a higher priority (e.g., `101`) than the BACKUP node (e.g., `100`).
-* **Nopreempt (for BACKUP node):** Whether the BACKUP node, once it becomes MASTER, should retain the VIP even if the original MASTER comes back online. Recommended is 'yes'.
-* **Virtual Router ID:** A number (0-255) that identifies the VRRP group. **Must be the same on both nodes.**
-* **Authentication Password:** A password used for VRRP communication between the nodes. **Must be the same on both nodes.**
-* **Virtual IP (VIP) Address and CIDR:** The shared IP address clients will use for DNS, along with its subnet prefix (e.g., `192.168.0.5` and `24`). **Must be the same on both nodes.**
-* **Optional Chrony Installation:** Whether to install and configure `chrony` for local system time synchronization on the current node.
-
-## How It Works
-
-* **`keepalived`:** This daemon implements the Virtual Router Redundancy Protocol (VRRP). It allows two or more machines to share a common Virtual IP address (VIP).
-* **VRRP Roles:**
-    * One machine acts as the `MASTER`, actively handling traffic for the VIP.
-    * The other(s) act as `BACKUP`(s), monitoring the MASTER.
-* **Failover:** If the MASTER node fails (or its `keepalived` service detects a problem via the health check), one of the BACKUP nodes takes over the VIP and becomes the new MASTER.
-* **Health Check Script (`/usr/local/bin/pihole_check.sh`):**
-    * This script is created by the setup process. Its primary role in failover decisions is to check if the `pihole-FTL.service` (Pi-hole's DNS resolver) is active.
-    * If the script reports `pihole-FTL.service` as unhealthy (exit code 1), `keepalived` reduces the node's effective priority, potentially triggering a failover.
-    * The script also includes a commented-out section for a more thorough DNS query check, which users can enable if needed (requires `dnsutils`).
-* **Optional Chrony NTP Synchronization:**
-    * If you choose to install `chrony` via the script, it will be configured with a set of default NTP pool servers (general and Debian-specific) to maintain accurate system time on the HA node itself.
-    * Accurate time is important for DNSSEC validation and correct log timestamps.
-    * **Crucially, the operational status of `chrony` on a node does NOT influence `keepalived` failover decisions in this setup.** The health check for failover relies solely on Pi-hole FTL's status.
-* **NTP Client Configuration (Important Note):**
-    * The Virtual IP (VIP) address managed by `keepalived` is intended **exclusively for DNS services** (i.e., for clients to use as their DNS server).
-    * **Do NOT configure your network clients to use the VIP as an NTP server.**
-    * If you wish for your Pi-hole nodes (which are Chrony clients by default when installed by this script) to also act as NTP servers for your network, you must configure your NTP clients to point directly to the **real static IP addresses** of each Pi-hole node. Using the VIP for NTP can lead to unpredictable behavior during failover scenarios.
-* **VRRP Advertisement Interval (`advert_int`):**
-    * The script configures `keepalived` with an `advert_int` of 1 second. This is the interval at which VRRP advertisements are sent.
-    * For advanced users, `keepalived` supports sub-second intervals (e.g., `0.5` for 500ms) for faster failover. However, this increases network traffic and CPU load. The generated `/etc/keepalived/keepalived.conf` includes a comment regarding this for manual adjustment and testing.
-* **Secure Configuration:**
-    * The script sets file permissions for `/etc/keepalived/keepalived.conf` to `600` (root read/write only). This is a security measure to protect the VRRP authentication password stored within this file.
-
-## Post-Installation Steps
-
-1.  **Configure DHCP Server:**
-    * Log in to your router (e.g., UniFi Dream Machine, pfSense, etc.).
-    * Navigate to your DHCP server settings.
-    * Change the DNS server(s) provided to your clients to be **only** the **Virtual IP (VIP) address** you configured.
-    * Clients will need to renew their DHCP lease (e.g., by restarting their network interface or rebooting) to pick up the new DNS server.
-
-2.  **Synchronize Pi-hole Configurations (Crucial!):**
-    * This script **only** handles IP address failover. It **does not** synchronize your Pi-hole settings (adlists, blocklists, whitelists, regex filters, client configurations, etc.).
-    * You **must** implement a separate mechanism to keep these settings consistent between your two Pi-hole nodes.
-    * Use scheduled `pihole -a -t` (teleporter) backups and restores, or rsync specific configuration files.
-
-3.  **Test Failover:**
-    * Identify which Pi-hole is currently the `MASTER` (it will have the VIP assigned to its network interface: `ip addr show <interface_name>`).
-    * Simulate a failure on the `MASTER` node:
-        * Stop the `keepalived` service: `sudo systemctl stop keepalived`
-        * Stop the Pi-hole FTL service: `sudo systemctl stop pihole-FTL.service` (or `sudo pihole disable`)
-        * Reboot the `MASTER` Pi: `sudo reboot`
-    * Verify that the `BACKUP` node takes over the VIP and becomes the new `MASTER`.
-    * Confirm that DNS resolution continues to work for your clients using the VIP.
-    * Restore the original `MASTER` node and observe if it reclaims the VIP (behavior depends on priorities and `nopreempt` setting).
-
-## Troubleshooting
-
-* **Check `keepalived` Status:**
-    ```bash
-    sudo systemctl status keepalived
-    ```
-* **View `keepalived` Logs:**
-    ```bash
-    journalctl -u keepalived -f
-    ```
-    Look for messages about state transitions (MASTER, BACKUP, FAULT), VRRP advertisements, and health check script results.
-* **Verify VIP Assignment:**
-    On each node, check if the VIP is assigned to the configured network interface:
-    ```bash
-    ip addr show <your_interface_name>
-    ```
-    Only the current `MASTER` node should have the VIP.
-* **Firewall:** Ensure your firewalls (if any running on the Pis, like `ufw`) are not blocking VRRP traffic. VRRP uses IP protocol number 112. Typically, for communication within the same LAN, this is not an issue unless restrictive rules are in place.
-* **Health Check Script:** Test the health check script manually:
-    ```bash
-    sudo /usr/local/bin/pihole_check.sh
-    echo $?
-    ```
-    It should output `0` if `pihole-FTL.service` is running, and `1` otherwise. (If you've manually enabled the DNS query check within the script, that would also factor into its exit code).
-* **Identical "Common Settings":** Double-check that `Virtual Router ID`, `Authentication Password`, and `Virtual IP CIDR` are absolutely identical in the `/etc/keepalived/keepalived.conf` files on both nodes.
-
-## Disclaimer
-
-* This script modifies system configurations and installs software. Use it at your own risk.
-* Always back up your systems before making significant changes.
-* Ensure you understand the commands being executed, especially when running scripts downloaded from the internet.
-
+- [README_keepalived.md](README_keepalived.md) — Keepalived (VRRP) setup
+- [README-anycast.md](README-anycast.md) — BGP anycast setup (beta)
+- [README-sync.md](README-sync.md) — configuration sync (beta)
