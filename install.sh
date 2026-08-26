@@ -228,12 +228,27 @@ CURRENT_SCRIPT_PHASE=1 # Initialize the phase counter, first phase will be 2.
 # --- Phase: Keepalived Install ---
 CURRENT_SCRIPT_PHASE=$((CURRENT_SCRIPT_PHASE + 1))
 echo
-echo ">>> Phase $CURRENT_SCRIPT_PHASE: Updating package lists and installing keepalived..."
+echo ">>> Phase $CURRENT_SCRIPT_PHASE: Updating package lists and installing keepalived + dig..."
 apt update > /dev/null 2>&1 # Suppress apt update output for cleaner logs
 if apt install -y keepalived; then
-  echo "SUCCESS: Packages installed."
+  echo "SUCCESS: keepalived installed."
 else
-  echo "ERROR: Failed to install packages. Please check for errors above. Exiting."
+  echo "ERROR: Failed to install keepalived. Please check for errors above. Exiting."
+  exit 1
+fi
+
+# The health check script below needs 'dig' to run a real DNS query (not just
+# check that a port is open). The package providing it is named 'dnsutils' on
+# most Debian/Ubuntu releases (a transitional package that still exists on
+# current Debian/Ubuntu and pulls in the real package); on some newer/minimal
+# systems the real package name 'bind9-dnsutils' is needed directly. Try both
+# so this works across DietPi and modern Debian/Ubuntu alike.
+if command -v dig > /dev/null 2>&1; then
+  echo "INFO: 'dig' already present."
+elif apt install -y dnsutils > /dev/null 2>&1 || apt install -y bind9-dnsutils > /dev/null 2>&1; then
+  echo "SUCCESS: dig (dnsutils/bind9-dnsutils) installed."
+else
+  echo "ERROR: Failed to install a package providing 'dig'. Please install dnsutils or bind9-dnsutils manually. Exiting."
   exit 1
 fi
 
@@ -256,14 +271,64 @@ echo ">>> Phase $CURRENT_SCRIPT_PHASE: Creating Pi-hole health check script at /
 
 cat << 'EOF_HEALTHCHECK' > /usr/local/bin/pihole_check.sh
 #!/bin/bash
-# Health check script for Pi-hole HA.
-# Instantly checks the kernel to see if port 53 (TCP or UDP) is actively listening.
+# Health check script for Pi-hole HA (keepalived vrrp_script).
+#
+# Portable: pure bash + dig + ss + logger + timeout, all standard on DietPi
+# and modern Debian/Ubuntu alike.
+#
+# Checks two things, in order:
+#   1. Something is actually listening on port 53 (cheap, catches FTL/dnsmasq
+#      being down outright -- this was the original check).
+#   2. A real DNS query through the LOCAL resolver (127.0.0.1:53) completes
+#      within DNS_TIMEOUT seconds. This is what the port-only check COULD NOT
+#      see: a resolver that is up and "listening" but silently stalling or
+#      dropping queries. A listening socket is not the same thing as a
+#      working one.
+#
+# Exit 0 = healthy. Exit 1 = unhealthy (keepalived's track_script then
+# subtracts this vrrp_script's `weight` from this node's priority).
 
-if ss -lntu | grep -q -E '(:53\s)'; then
-  exit 0
-else
+set -u
+
+DNS_TIMEOUT=3            # seconds -- "if a query takes longer than 3s, fail"
+RESOLVER="127.0.0.1"     # always test via the real client-facing port (53),
+                         # not the backend resolver's internal port directly --
+                         # this way the check also still catches FTL/dnsmasq
+                         # itself being down, exactly like the check it replaces.
+
+# A small pool of extremely high-uptime, globally anycast domains. Rotating
+# across them (rather than querying one fixed name) avoids a false failover
+# if any single one has its own transient hiccup, and avoids every check
+# being a guaranteed cache hit that would never exercise the resolver's
+# recursive path.
+DOMAINS=(google.com cloudflare.com apple.com microsoft.com amazon.com)
+DOMAIN="${DOMAINS[$RANDOM % ${#DOMAINS[@]}]}"
+
+# --- Check 1: is anything listening on port 53 at all? ---
+if ! ss -lntu 2>/dev/null | grep -q -E ':53[[:space:]]'; then
+  logger -t pihole_check "FAIL: nothing listening on port 53"
   exit 1
 fi
+
+# --- Check 2: does a real query actually come back in time? ---
+if ! command -v dig >/dev/null 2>&1; then
+  logger -t pihole_check "FAIL: 'dig' not found -- install dnsutils (or bind9-dnsutils)"
+  exit 1
+fi
+
+# dig's own +time/+tries are the primary timeout mechanism. The outer
+# `timeout` command is a belt-and-suspenders bound in case dig ever fails to
+# honor its own flags -- it guarantees this script can never itself hang
+# past DNS_TIMEOUT+1 seconds, whatever happens.
+RESULT=$(timeout "$((DNS_TIMEOUT + 1))" dig "@${RESOLVER}" "$DOMAIN" A +time="$DNS_TIMEOUT" +tries=1 +short 2>/dev/null)
+STATUS=$?
+
+if [ "$STATUS" -ne 0 ] || [ -z "$RESULT" ]; then
+  logger -t pihole_check "FAIL: query for $DOMAIN via $RESOLVER did not return within ${DNS_TIMEOUT}s (dig exit=$STATUS)"
+  exit 1
+fi
+
+exit 0
 EOF_HEALTHCHECK
 
 chmod +x /usr/local/bin/pihole_check.sh # Make the script executable
@@ -296,13 +361,21 @@ global_defs {
     enable_script_security
 }
 
-# Defines the health check script for Pi-hole
+# Defines the health check script for Pi-hole.
+# This runs a real DNS query through the local resolver on every check (see
+# pihole_check.sh), not just a port-open check -- so 'interval' and 'timeout'
+# have to leave headroom for a query that legitimately takes close to 3s to
+# time out. fall/rise are 2 (not 1) so a single slow-but-real query doesn't
+# trigger a failover by itself; it takes two checks ~5s apart to agree the
+# node is actually unhealthy, which filters one-off noise while still
+# reacting to a real sustained problem within ~10s.
 vrrp_script check_pihole {
     script "/usr/local/bin/pihole_check.sh"  # Path to the health check script (monitors Pi-hole)
-    interval 2                               # Run check_pihole every 2 seconds
+    interval 5                               # Run check_pihole every 5 seconds
+    timeout 4                                # Kill the script if it somehow runs longer than this (safety net)
     weight 2                                 # Decrease priority by 2 on failure, increase by 2 on success
-    fall 2                                   # Require 2 consecutive failures to mark script as failed
-    rise 2                                   # Require 2 consecutive successes to mark script as successful
+    fall 2                                   # Require 2 consecutive failures (~10s) to mark script as failed
+    rise 2                                   # Require 2 consecutive successes (~10s) to mark script as successful
 }
 
 # Defines the VRRP instance for Pi-hole HA
